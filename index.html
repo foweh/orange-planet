@@ -779,27 +779,52 @@
         }
 
         // ==================== MediaPipe Hands 初始化 ====================
-        // 检查全局变量是否可用（由CDN script标签引入）
-        if (typeof Hands === 'undefined') {
-            console.error('MediaPipe Hands 未加载。请检查CDN连接。');
-            // 显示错误提示
-            hintOverlay.innerHTML =
-                '<div class="hint-text" style="color:#ff6666;">⚠ MediaPipe 加载失败，请检查网络连接后刷新页面</div>';
-        }
-
-        if (typeof Camera === 'undefined') {
-            console.error('MediaPipe Camera 未加载。请检查CDN连接。');
-        }
-
         let handsInstance = null;
         let cameraUtilsInstance = null;
         let mediaPipeReady = false;
+        let mediaPipeFailed = false;
+        let mediaPipeStarting = false;
 
-        async function initMediaPipe() {
+        // CDN 列表（locateFile 回退）
+        const MEDIAPIPE_CDNS = [
+            'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240',
+            'https://unpkg.com/@mediapipe/hands@0.4.1675469240',
+        ];
+        let currentMediaPipeCDN = 0;
+
+        // 检查 MediaPipe 库是否加载
+        const handsLoaded = typeof Hands !== 'undefined';
+        const cameraLoaded = typeof Camera !== 'undefined';
+        if (!handsLoaded) console.error('❌ Hands 库未加载');
+        if (!cameraLoaded) console.error('❌ Camera 库未加载');
+
+        // 初始隐藏视频面板，显示点击提示
+        videoPanel.style.display = 'none';
+
+        async function tryInitMediaPipe() {
+            if (mediaPipeReady) return true;
+            if (mediaPipeFailed || mediaPipeStarting) return false;
+            if (!handsLoaded || !cameraLoaded) {
+                mediaPipeFailed = true;
+                alert('手势库加载失败，请检查网络后刷新页面');
+                return false;
+            }
+
+            mediaPipeStarting = true;
+            updateVideoPanelUI('loading');
+
             try {
+                // 先请求摄像头权限（用户点击触发，满足 iOS 要求）
+                const testStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' },
+                    audio: false
+                });
+                testStream.getTracks().forEach(t => t.stop());
+
                 handsInstance = new Hands({
                     locateFile: (file) => {
-                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
+                        const url = MEDIAPIPE_CDNS[currentMediaPipeCDN] + '/' + file;
+                        return url;
                     }
                 });
 
@@ -812,11 +837,16 @@
 
                 handsInstance.onResults(onHandResults);
 
-                // 使用Camera类处理视频流
+                // 预加载模型
+                console.log('⏳ 加载手势模型（约5MB）...');
+                await handsInstance.initialize();
+                console.log('✅ 手势模型加载完成');
+
+                // 启动摄像头
                 cameraUtilsInstance = new Camera(videoElement, {
                     onFrame: async () => {
                         if (handsInstance && mediaPipeReady) {
-                            await handsInstance.send({ image: videoElement });
+                            try { await handsInstance.send({ image: videoElement }); } catch (e) {}
                         }
                     },
                     width: 640,
@@ -825,13 +855,76 @@
 
                 await cameraUtilsInstance.start();
                 mediaPipeReady = true;
-                console.log('✅ MediaPipe Hands 初始化成功');
+                mediaPipeStarting = false;
+                videoPanel.style.display = '';
+                updateVideoPanelUI('ready');
+                console.log('✅ 手势识别已就绪！');
+                return true;
+
             } catch (error) {
-                console.error('MediaPipe 初始化失败:', error);
-                hintOverlay.innerHTML =
-                    '<div class="hint-text" style="color:#ff6666;">⚠ 摄像头访问失败，请允许摄像头权限后刷新页面</div>';
+                console.error('❌ 手势初始化失败:', error.message || error);
+                mediaPipeStarting = false;
+
+                // CDN 回退
+                if (currentMediaPipeCDN < MEDIAPIPE_CDNS.length - 1 &&
+                    /fetch|network|timeout/i.test(error.message || '')) {
+                    currentMediaPipeCDN++;
+                    console.log('🔄 切换CDN: ' + MEDIAPIPE_CDNS[currentMediaPipeCDN]);
+                    return tryInitMediaPipe();
+                }
+
+                mediaPipeFailed = true;
+                hideVideoPanel();
+                alert('手势识别启动失败: ' + (error.message || '未知错误') + '\n\n3D场景仍可触屏操控');
+                return false;
             }
         }
+
+        function updateVideoPanelUI(state) {
+            const label = videoPanel.querySelector('.label');
+            if (!label) return;
+            if (state === 'loading') {
+                label.textContent = '⏳ 加载模型中...';
+            } else if (state === 'ready') {
+                label.textContent = '🖐 手势已就绪';
+            } else if (state === 'start') {
+                label.textContent = '📹 点此启用手势';
+            }
+        }
+
+        function hideVideoPanel() {
+            videoPanel.style.display = 'none';
+        }
+
+        function showVideoPanelPrompt() {
+            if (mediaPipeReady || mediaPipeFailed) return;
+            videoPanel.style.display = '';
+            updateVideoPanelUI('start');
+            // 点击面板启动手势
+            videoPanel.onclick = async function(e) {
+                if (mediaPipeReady || mediaPipeStarting) return;
+                e.stopPropagation();
+                const ok = await tryInitMediaPipe();
+                if (ok) {
+                    videoPanel.onclick = null; // 成功后恢复默认点击行为
+                    // 恢复默认点击：显示提示
+                    videoPanel.addEventListener('click', function showHint() {
+                        hintOverlay.style.transition = 'opacity 0.4s ease';
+                        hintOverlay.style.opacity = '1';
+                        hintFadeTimer = 6;
+                    });
+                }
+            };
+            // 给面板加视觉提示
+            videoPanel.style.cursor = 'pointer';
+            videoPanel.style.borderColor = 'rgba(255,165,0,0.7)';
+            videoPanel.style.animation = 'pulse-border 2s ease-in-out infinite';
+        }
+
+        // 脉冲边框动画
+        const pulseStyle = document.createElement('style');
+        pulseStyle.textContent = '@keyframes pulse-border{0%,100%{border-color:rgba(255,165,0,0.7)}50%{border-color:rgba(255,165,0,1)}}';
+        document.head.appendChild(pulseStyle);
 
         // ==================== 手势识别回调 ====================
         function onHandResults(results) {
@@ -1247,7 +1340,7 @@
         }
 
         async function startApp() {
-            // ✅ 先启动3D渲染（不等待摄像头）
+            // ✅ 先启动3D渲染（不等待任何东西）
             requestAnimationFrame(animate);
             hideLoading();
 
@@ -1257,23 +1350,12 @@
 
             console.log('🚀 绚烂橙色星球已就绪');
             console.log('   👆 触屏操控：滑动旋转 | 双指缩放远近');
-            console.log('   🖐 手势控制：移动手旋转 | 握拳拉远 | 张开靠近');
+            console.log('   📹 点击右下角面板 → 启用手势识别');
             console.log('   ⌨ 键盘备用：方向键旋转/远近 | R重置 | F拉远 | G靠近');
 
-            // 异步初始化摄像头（不阻塞3D渲染）
-            initMediaPipe().then(() => {
-                console.log('📹 手势摄像头已就绪');
-            }).catch((err) => {
-                console.warn('摄像头/手势初始化失败（3D场景仍可触屏操控）:', err);
-            });
+            // 显示"点此启用手势"面板
+            showVideoPanelPrompt();
         }
-
-        // 点击视频面板可以重新显示提示
-        videoPanel.addEventListener('click', () => {
-            hintOverlay.style.transition = 'opacity 0.4s ease';
-            hintOverlay.style.opacity = '1';
-            hintFadeTimer = 6;
-        });
 
         // 启动应用
         startApp().catch((err) => {
