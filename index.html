@@ -792,39 +792,48 @@
         ];
         let currentMediaPipeCDN = 0;
 
-        // 检查 MediaPipe 库是否加载
-        const handsLoaded = typeof Hands !== 'undefined';
-        const cameraLoaded = typeof Camera !== 'undefined';
-        if (!handsLoaded) console.error('❌ Hands 库未加载');
-        if (!cameraLoaded) console.error('❌ Camera 库未加载');
-
-        // 初始隐藏视频面板，显示点击提示
+        // 初始隐藏视频面板
         videoPanel.style.display = 'none';
+
+        // 轮询等待 Hands/Camera 全局变量就绪（CDN 回退是异步的，需要等）
+        async function waitForMediaPipeLibs(timeoutMs) {
+            if (typeof Hands !== 'undefined' && typeof Camera !== 'undefined') return true;
+            console.log('⏳ 等待手势库加载...');
+            var start = Date.now();
+            while (Date.now() - start < (timeoutMs || 10000)) {
+                if (typeof Hands !== 'undefined' && typeof Camera !== 'undefined') {
+                    console.log('✅ 手势库就绪 (' + (Date.now() - start) + 'ms)');
+                    return true;
+                }
+                await new Promise(function(r) { setTimeout(r, 300); });
+            }
+            return false;
+        }
 
         async function tryInitMediaPipe() {
             if (mediaPipeReady) return true;
             if (mediaPipeFailed || mediaPipeStarting) return false;
-            if (!handsLoaded || !cameraLoaded) {
-                mediaPipeFailed = true;
-                alert('手势库加载失败，请检查网络后刷新页面');
-                return false;
-            }
 
             mediaPipeStarting = true;
             updateVideoPanelUI('loading');
 
             try {
-                // 先请求摄像头权限（用户点击触发，满足 iOS 要求）
-                const testStream = await navigator.mediaDevices.getUserMedia({
+                // 等待 CDN 脚本加载完成（关键！onerror 回退是异步的）
+                var libsReady = await waitForMediaPipeLibs(12000);
+                if (!libsReady) {
+                    throw new Error('手势库加载超时，请检查网络后刷新页面');
+                }
+
+                // 请求摄像头权限（用户点击触发，满足 iOS 要求）
+                var testStream = await navigator.mediaDevices.getUserMedia({
                     video: { width: 640, height: 480, facingMode: 'user' },
                     audio: false
                 });
-                testStream.getTracks().forEach(t => t.stop());
+                testStream.getTracks().forEach(function(t) { t.stop(); });
 
                 handsInstance = new Hands({
-                    locateFile: (file) => {
-                        const url = MEDIAPIPE_CDNS[currentMediaPipeCDN] + '/' + file;
-                        return url;
+                    locateFile: function(file) {
+                        return MEDIAPIPE_CDNS[currentMediaPipeCDN] + '/' + file;
                     }
                 });
 
@@ -844,7 +853,7 @@
 
                 // 启动摄像头
                 cameraUtilsInstance = new Camera(videoElement, {
-                    onFrame: async () => {
+                    onFrame: async function() {
                         if (handsInstance && mediaPipeReady) {
                             try { await handsInstance.send({ image: videoElement }); } catch (e) {}
                         }
