@@ -905,33 +905,104 @@
             videoPanel.style.display = 'none';
         }
 
+        // ==================== 摄像头面板拖拽 ====================
+        var panelDrag = { active: false, startX: 0, startY: 0, startLeft: 0, startTop: 0, moved: false, threshold: 5 };
+
+        function getPanelPos() {
+            var r = videoPanel.getBoundingClientRect();
+            return { left: r.left, top: r.top, width: r.width, height: r.height };
+        }
+
+        function onPanelPointerDown(e) {
+            if (mediaPipeStarting) return;
+            panelDrag.active = true;
+            panelDrag.moved = false;
+            panelDrag.startX = e.clientX;
+            panelDrag.startY = e.clientY;
+            var pos = getPanelPos();
+            panelDrag.startLeft = pos.left;
+            panelDrag.startTop = pos.top;
+            // 拖拽时关掉过渡动画，否则会卡顿
+            videoPanel.style.transition = 'none';
+            videoPanel.setPointerCapture(e.pointerId);
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function onPanelPointerMove(e) {
+            if (!panelDrag.active) return;
+            var dx = e.clientX - panelDrag.startX;
+            var dy = e.clientY - panelDrag.startY;
+            if (!panelDrag.moved && (Math.abs(dx) > panelDrag.threshold || Math.abs(dy) > panelDrag.threshold)) {
+                panelDrag.moved = true;
+                videoPanel.style.cursor = 'grabbing';
+                // 初次拖拽：从 CSS bottom/right 切换为 left/top
+                videoPanel.style.bottom = 'auto';
+                videoPanel.style.right = 'auto';
+            }
+            if (!panelDrag.moved) return;
+            var newLeft = panelDrag.startLeft + dx;
+            var newTop = panelDrag.startTop + dy;
+            // 边界钳制
+            var pw = videoPanel.offsetWidth;
+            var ph = videoPanel.offsetHeight;
+            newLeft = Math.max(0, Math.min(window.innerWidth - pw, newLeft));
+            newTop = Math.max(0, Math.min(window.innerHeight - ph, newTop));
+            videoPanel.style.left = newLeft + 'px';
+            videoPanel.style.top = newTop + 'px';
+        }
+
+        function onPanelPointerUp(e) {
+            if (!panelDrag.active) return;
+            panelDrag.active = false;
+            videoPanel.style.transition = '';
+            videoPanel.style.cursor = mediaPipeReady ? 'default' : 'grab';
+            videoPanel.releasePointerCapture(e.pointerId);
+            if (!panelDrag.moved) {
+                // 这是点击，不是拖拽 → 启动手势
+                handlePanelTap(e);
+            }
+        }
+
+        async function handlePanelTap(e) {
+            if (mediaPipeReady) {
+                // 已就绪，点击显示提示
+                hintOverlay.style.transition = 'opacity 0.4s ease';
+                hintOverlay.style.opacity = '1';
+                hintFadeTimer = 6;
+                return;
+            }
+            if (mediaPipeStarting) return;
+            var ok = await tryInitMediaPipe();
+            if (ok) {
+                updateVideoPanelUI('ready');
+                videoPanel.style.cursor = 'default';
+                videoPanel.style.animation = '';
+                videoPanel.style.borderColor = '';
+            }
+        }
+
+        function setupPanelDrag() {
+            videoPanel.addEventListener('pointerdown', onPanelPointerDown);
+            videoPanel.addEventListener('pointermove', onPanelPointerMove);
+            videoPanel.addEventListener('pointerup', onPanelPointerUp);
+            videoPanel.addEventListener('pointercancel', onPanelPointerUp);
+            videoPanel.style.touchAction = 'none';
+        }
+        setupPanelDrag();
+
         function showVideoPanelPrompt() {
             if (mediaPipeReady || mediaPipeFailed) return;
             videoPanel.style.display = '';
             updateVideoPanelUI('start');
-            // 点击面板启动手势
-            videoPanel.onclick = async function(e) {
-                if (mediaPipeReady || mediaPipeStarting) return;
-                e.stopPropagation();
-                const ok = await tryInitMediaPipe();
-                if (ok) {
-                    videoPanel.onclick = null; // 成功后恢复默认点击行为
-                    // 恢复默认点击：显示提示
-                    videoPanel.addEventListener('click', function showHint() {
-                        hintOverlay.style.transition = 'opacity 0.4s ease';
-                        hintOverlay.style.opacity = '1';
-                        hintFadeTimer = 6;
-                    });
-                }
-            };
             // 给面板加视觉提示
-            videoPanel.style.cursor = 'pointer';
+            videoPanel.style.cursor = 'grab';
             videoPanel.style.borderColor = 'rgba(255,165,0,0.7)';
             videoPanel.style.animation = 'pulse-border 2s ease-in-out infinite';
         }
 
         // 脉冲边框动画
-        const pulseStyle = document.createElement('style');
+        var pulseStyle = document.createElement('style');
         pulseStyle.textContent = '@keyframes pulse-border{0%,100%{border-color:rgba(255,165,0,0.7)}50%{border-color:rgba(255,165,0,1)}}';
         document.head.appendChild(pulseStyle);
 
