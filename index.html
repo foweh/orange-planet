@@ -66,8 +66,16 @@
             height: 100%;
             object-fit: cover;
             transform: scaleX(-1);
-            /* 镜像显示 */
             display: block;
+        }
+        #hand-overlay {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 5;
+            pointer-events: none;
+            transform: scaleX(-1);
         }
         #video-panel .label {
             position: absolute;
@@ -238,6 +246,7 @@
     <!-- 摄像头预览面板 -->
     <div id="video-panel" title="手势摄像头预览">
         <video id="input-video" playsinline autoplay muted></video>
+        <canvas id="hand-overlay"></canvas>
         <span class="label">手势摄像头</span>
         <div class="gesture-indicator" id="gesture-dot"></div>
     </div>
@@ -824,13 +833,7 @@
                     throw new Error('手势库加载超时，请检查网络后刷新页面');
                 }
 
-                // 请求摄像头权限（用户点击触发，满足 iOS 要求）
-                var testStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 640, height: 480, facingMode: 'user' },
-                    audio: false
-                });
-                testStream.getTracks().forEach(function(t) { t.stop(); });
-
+                // 直接由 Camera 类申请摄像头（用户已点击，满足 iOS 手势要求）
                 handsInstance = new Hands({
                     locateFile: function(file) {
                         return MEDIAPIPE_CDNS[currentMediaPipeCDN] + '/' + file;
@@ -840,8 +843,8 @@
                 handsInstance.setOptions({
                     maxNumHands: 1,
                     modelComplexity: 1,
-                    minDetectionConfidence: 0.7,
-                    minTrackingConfidence: 0.5,
+                    minDetectionConfidence: 0.6,
+                    minTrackingConfidence: 0.4,
                 });
 
                 handsInstance.onResults(onHandResults);
@@ -1060,9 +1063,9 @@
                 }
                 avgDistToWrist /= 5;
 
-                // 动态阈值（基于手的大小）
-                const fistThreshold = handSize * 0.55;
-                const openThreshold = handSize * 0.78;
+                // 动态阈值（基于手的大小，放宽以适配更多手型）
+                const fistThreshold = handSize * 0.65;
+                const openThreshold = handSize * 0.72;
 
                 // 判断手势类型
                 const prevGesture = gestureState.gestureType;
@@ -1073,6 +1076,9 @@
                 } else {
                     gestureState.gestureType = 'neutral';
                 }
+
+                // 绘制手部骨架可视化
+                drawHandSkeleton(landmarks, gestureState.gestureType);
 
                 // 更新持续时间
                 if (gestureState.gestureType === 'fist') {
@@ -1099,6 +1105,74 @@
                 gestureState.horizontalOffset *= 0.9; // 缓慢归零
                 gestureState.sizeDelta = 0;
                 updateGestureIndicator();
+                // 清空骨架画布
+                var hc = document.getElementById('hand-overlay');
+                if (hc) { var hctx = hc.getContext('2d'); hctx.clearRect(0, 0, hc.width, hc.height); }
+            }
+        }
+
+        // ==================== 手部骨架可视化 ====================
+        // MediaPipe 手部21点连线定义
+        var HAND_CONNECTIONS = [
+            [0,1],[1,2],[2,3],[3,4],     // 拇指
+            [0,5],[5,6],[6,7],[7,8],     // 食指
+            [0,9],[9,10],[10,11],[11,12], // 中指
+            [0,13],[13,14],[14,15],[15,16], // 无名指
+            [0,17],[17,18],[18,19],[19,20], // 小指
+            [5,9],[9,13],[13,17]          // 手掌横线
+        ];
+
+        function drawHandSkeleton(landmarks, gestureType) {
+            var canvas = document.getElementById('hand-overlay');
+            if (!canvas) return;
+            var ctx = canvas.getContext('2d');
+            var w = canvas.parentElement.clientWidth;
+            var h = canvas.parentElement.clientHeight;
+            if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w;
+                canvas.height = h;
+            }
+
+            ctx.clearRect(0, 0, w, h);
+
+            // 手势类型对应的颜色
+            var color;
+            if (gestureType === 'fist') {
+                color = '#ff4444';
+            } else if (gestureType === 'open') {
+                color = '#44ff44';
+            } else {
+                color = '#ffaa00';
+            }
+
+            // 绘制连线
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.globalAlpha = 0.7;
+            for (var i = 0; i < HAND_CONNECTIONS.length; i++) {
+                var c = HAND_CONNECTIONS[i];
+                var a = landmarks[c[0]];
+                var b = landmarks[c[1]];
+                ctx.beginPath();
+                ctx.moveTo(a.x * w, a.y * h);
+                ctx.lineTo(b.x * w, b.y * h);
+                ctx.stroke();
+            }
+
+            // 绘制关键点
+            ctx.globalAlpha = 1;
+            for (var j = 0; j < landmarks.length; j++) {
+                var lm = landmarks[j];
+                var x = lm.x * w;
+                var y = lm.y * h;
+                ctx.beginPath();
+                ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
             }
         }
 
