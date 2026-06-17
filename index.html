@@ -253,19 +253,58 @@
     </div>
 
     <!-- ==================== MediaPipe CDN (常规script标签引入) ==================== -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
-
-    <!-- ==================== Three.js Import Map ==================== -->
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-            }
-        }
+    <!-- MediaPipe 手势识别库（常规脚本，兼容所有浏览器，带CDN回退） -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"
+        onerror="var s=document.createElement('script');s.src='https://unpkg.com/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js';document.head.appendChild(s);">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"
+        onerror="var s=document.createElement('script');s.src='https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js';document.head.appendChild(s);">
     </script>
 
+    <!-- ==================== import map 兼容垫片（让旧浏览器支持 import map） ==================== -->
+    <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+
+    <!-- ==================== 智能CDN切换：自动测速选最快的源 ==================== -->
+    <script>
+    (function(){
+        if (window.__CDN_PICKED) return;
+        window.__CDN_PICKED = true;
+
+        var cdnSets = [
+            { name:'jsdelivr',  three:'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',           addons:'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/' },
+            { name:'unpkg',     three:'https://unpkg.com/three@0.160.0/build/three.module.js',                      addons:'https://unpkg.com/three@0.160.0/examples/jsm/' },
+            { name:'esm.sh',    three:'https://esm.sh/three@0.160.0/build/three.module.js',                         addons:'https://esm.sh/three@0.160.0/examples/jsm/' }
+        ];
+
+        // 创建 import map，默认用第一个CDN
+        var map = document.createElement('script');
+        map.type = 'importmap';
+        map.id = 'importmap';
+        map.textContent = JSON.stringify({ imports: { three: cdnSets[0].three, 'three/addons/': cdnSets[0].addons } });
+        document.head.appendChild(map);
+
+        // 异步测速，自动选最快的CDN并更新 import map
+        var bestTime = Infinity, bestCDN = cdnSets[0];
+        var done = 0;
+        cdnSets.forEach(function(cdn) {
+            var start = Date.now();
+            var img = new Image();
+            img.onload = img.onerror = function() {
+                var elapsed = Date.now() - start;
+                done++;
+                if (elapsed < bestTime) { bestTime = elapsed; bestCDN = cdn; }
+                if (done >= cdnSets.length || (bestCDN !== cdnSets[0] && bestTime < 500)) {
+                    var m = document.getElementById('importmap');
+                    if (m) m.textContent = JSON.stringify({ imports: { three: bestCDN.three, 'three/addons/': bestCDN.addons } });
+                    console.log('⚡ 最快CDN: ' + bestCDN.name + ' (' + bestTime + 'ms)');
+                }
+            };
+            img.src = cdn.three.split('/build/')[0] + '/package.json?' + Date.now();
+        });
+    })();
+    </script>
+
+    <!-- ==================== 主应用（ES模块） ==================== -->
     <script type="module">
         import * as THREE from 'three';
         import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
