@@ -221,6 +221,15 @@
 </head>
 <body>
 
+    <!-- 加载提示（纯HTML，不依赖JS） -->
+    <div id="loading-overlay" style="position:fixed;inset:0;z-index:100;background:#000010;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.6s ease;">
+        <div style="width:48px;height:48px;border:3px solid rgba(255,140,0,0.2);border-top-color:#ff8800;border-radius:50%;animation:spin 1s linear infinite;"></div>
+        <div style="color:rgba(255,255,255,0.7);margin-top:18px;font-size:14px;letter-spacing:0.05em;">🪐 星球加载中...</div>
+    </div>
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+
     <!-- Three.js 渲染画布 -->
     <div id="canvas-container">
         <canvas id="three-canvas"></canvas>
@@ -235,21 +244,17 @@
 
     <!-- 操作提示 -->
     <div id="hint-overlay">
-        <div class="hint-text">🖐 手势控制星球视角</div>
+        <div class="hint-text">👆 滑动旋转 · 双指缩放</div>
         <div class="icon-row">
-            <span>👋 移动手 → 旋转</span>
-            <span>✊ 握拳拉远 → 远离</span>
-            <span>🖐 张开靠近 → 靠近</span>
+            <span>👆 滑动 → 旋转</span>
+            <span>🔍 双指 → 缩放</span>
+            <span>🖐 手势摄像头 → 隔空操控</span>
         </div>
     </div>
 
     <!-- ==================== MediaPipe CDN (常规script标签引入) ==================== -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"
-    crossorigin="anonymous">
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"
-    crossorigin="anonymous">
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
 
     <!-- ==================== Three.js Import Map ==================== -->
     <script type="importmap">
@@ -1080,22 +1085,148 @@
         }
         window.addEventListener('keydown', onKeyDown);
 
-        // ==================== 启动 ====================
-        async function startApp() {
-            // 初始化MediaPipe
-            await initMediaPipe();
+        // ==================== 触屏手势控制 ====================
+        let touchState = {
+            active: false,
+            startX: 0,
+            startY: 0,
+            startTheta: 0,
+            startDist: 0,
+            startR: 0,
+            lastX: 0,
+            lastY: 0,
+            isPinching: false,
+        };
 
-            // 开始渲染循环
+        function onTouchStart(e) {
+            if (e.target === videoPanel || videoPanel.contains(e.target)) return;
+            if (e.touches.length === 1) {
+                const t = e.touches[0];
+                touchState.active = true;
+                touchState.isPinching = false;
+                touchState.startX = t.clientX;
+                touchState.startY = t.clientY;
+                touchState.lastX = t.clientX;
+                touchState.lastY = t.clientY;
+                touchState.startTheta = cameraControl.targetTheta;
+                cameraControl.rotationSpeed = 0;
+                e.preventDefault();
+            } else if (e.touches.length === 2) {
+                touchState.active = true;
+                touchState.isPinching = true;
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                touchState.startDist = Math.sqrt(dx * dx + dy * dy);
+                touchState.startR = cameraControl.targetR;
+                cameraControl.rotationSpeed = 0;
+                e.preventDefault();
+            }
+        }
+
+        function onTouchMove(e) {
+            if (!touchState.active) return;
+            if (touchState.isPinching && e.touches.length === 2) {
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const scale = touchState.startDist > 0 ? dist / touchState.startDist : 1;
+                cameraControl.targetR = THREE.MathUtils.clamp(
+                    touchState.startR / scale,
+                    cameraControl.minR,
+                    cameraControl.maxR
+                );
+                e.preventDefault();
+            } else if (!touchState.isPinching && e.touches.length === 1) {
+                const t = e.touches[0];
+                const dx = t.clientX - touchState.lastX;
+                const dy = t.clientY - touchState.lastY;
+                touchState.lastX = t.clientX;
+                touchState.lastY = t.clientY;
+                cameraControl.targetTheta -= dx * 0.008;
+                cameraControl.targetPhi = THREE.MathUtils.clamp(
+                    cameraControl.targetPhi + dy * 0.006,
+                    0.15,
+                    Math.PI * 0.47
+                );
+                e.preventDefault();
+            }
+        }
+
+        function onTouchEnd(e) {
+            if (e.touches.length === 0) {
+                touchState.active = false;
+                touchState.isPinching = false;
+            } else if (e.touches.length === 1 && touchState.isPinching) {
+                touchState.isPinching = false;
+                const t = e.touches[0];
+                touchState.lastX = t.clientX;
+                touchState.lastY = t.clientY;
+                touchState.startTheta = cameraControl.targetTheta;
+            }
+        }
+
+        canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+        canvas.addEventListener('touchend', onTouchEnd);
+        canvas.addEventListener('touchcancel', onTouchEnd);
+
+        // 鼠标拖拽（桌面端）
+        let mouseDown = false;
+        let mouseLastX = 0, mouseLastY = 0;
+        canvas.addEventListener('mousedown', (e) => {
+            mouseDown = true;
+            mouseLastX = e.clientX;
+            mouseLastY = e.clientY;
+            cameraControl.rotationSpeed = 0;
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!mouseDown) return;
+            const dx = e.clientX - mouseLastX;
+            const dy = e.clientY - mouseLastY;
+            mouseLastX = e.clientX;
+            mouseLastY = e.clientY;
+            cameraControl.targetTheta -= dx * 0.005;
+            cameraControl.targetPhi = THREE.MathUtils.clamp(cameraControl.targetPhi + dy * 0.004, 0.15, Math.PI * 0.47);
+        });
+        window.addEventListener('mouseup', () => { mouseDown = false; });
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            cameraControl.targetR = THREE.MathUtils.clamp(
+                cameraControl.targetR + e.deltaY * 0.01,
+                cameraControl.minR,
+                cameraControl.maxR
+            );
+        }, { passive: false });
+
+        // ==================== 启动 ====================
+        function hideLoading() {
+            const loading = document.getElementById('loading-overlay');
+            if (loading) {
+                loading.style.opacity = '0';
+                setTimeout(() => { if (loading.parentNode) loading.remove(); }, 700);
+            }
+        }
+
+        async function startApp() {
+            // ✅ 先启动3D渲染（不等待摄像头）
             requestAnimationFrame(animate);
+            hideLoading();
 
             // 初始时显示提示
             hintOverlay.style.opacity = '1';
             hintFadeTimer = 10;
 
             console.log('🚀 绚烂橙色星球已就绪');
+            console.log('   👆 触屏操控：滑动旋转 | 双指缩放远近');
             console.log('   🖐 手势控制：移动手旋转 | 握拳拉远 | 张开靠近');
             console.log('   ⌨ 键盘备用：方向键旋转/远近 | R重置 | F拉远 | G靠近');
-            console.log('   📹 摄像头预览在右下角');
+
+            // 异步初始化摄像头（不阻塞3D渲染）
+            initMediaPipe().then(() => {
+                console.log('📹 手势摄像头已就绪');
+            }).catch((err) => {
+                console.warn('摄像头/手势初始化失败（3D场景仍可触屏操控）:', err);
+            });
         }
 
         // 点击视频面板可以重新显示提示
@@ -1108,10 +1239,10 @@
         // 启动应用
         startApp().catch((err) => {
             console.error('启动失败:', err);
+            hideLoading();
             hintOverlay.innerHTML =
-                '<div class="hint-text" style="color:#ff6666;">⚠ 启动失败，请检查摄像头权限并刷新页面</div>';
+                '<div class="hint-text" style="color:#ff6666;">⚠ 启动失败，请刷新页面</div>';
             hintOverlay.style.opacity = '1';
-            // 即使MediaPipe失败，仍然渲染3D场景（可使用键盘控制）
             requestAnimationFrame(animate);
         });
 
